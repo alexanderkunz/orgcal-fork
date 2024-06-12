@@ -53,7 +53,7 @@ This tool has only be tested with a Nextcloud CalDAV server. If you are using an
 
 ## Known issues / bugs / limitations
 - Deleting events: Deleting events on the calendar can cause issues with ids, as the software may try to create a new id with an existing (although deleted) id. The original motivation was to only support one-way syncing, so deletion was always supposed to only happen in the org files. A more stable solution would be to keep track of the ids and how they are used. A workaround for now is to simply delete an entry in the org file first, then in the calendar.
-- Archiving: Similar to deletion, the event simply vanishes from the point of view of the software, when it is moved to a dedicated archive file. Usually, this will simply lead to the software ignoring the event and eny further changes to it. The easiest solution is to include the archive files in the org files to synchronize with the server.
+- Archiving: Similar to deletion, the event simply vanishes from the point of view of the software, when it is moved to a dedicated archive file. Usually, this will simply lead to the software ignoring the event and any further changes to it. The easiest solution is to include the archive files in the org files to synchronize with the server.
 - Timestamps: Sometimes timestamps are not updated correctly, especially if one switches from all-day event to one with a specific timestamp. This is being investigated.
 
 ## License
