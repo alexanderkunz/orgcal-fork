@@ -69,7 +69,7 @@ class Event:
 
         if isinstance(effort, int):
             self.duration = dt.timedelta(minutes=effort)
-        elif isinstance(effort, str):
+        elif isinstance(effort, str) and ':' in effort:
             duration = effort.strip().split(':')
             self.duration = dt.timedelta(
                 hours=int(duration[0]), minutes=int(duration[1])
