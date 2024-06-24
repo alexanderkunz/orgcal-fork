@@ -2,6 +2,7 @@ from dataclasses import dataclass
 import datetime as dt
 import caldav
 import caldav.lib.error
+import caldav.objects
 import pytz
 import logging
 
@@ -125,19 +126,42 @@ class Event:
                 ical = getattr(remote_event, 'icalendar_component')
             else:
                 raise RuntimeError(
-                    'remote_event does not have icalendar_component attribute'
+                    '\'remote_event\' does not have icalendar_component attribute.'
                 )
 
             ical['SUMMARY'] = self.title
             ical['DTSTART'].dt = self.scheduled
+
+            if isinstance(self.scheduled, dt.datetime):
+                ical['DTSTART'].params['TZID'] = 'Europe/Berlin'
+                if 'VALUE' in ical['DTSTART'].params:
+                    del ical['DTSTART'].params['VALUE']
+
+            elif isinstance(self.scheduled, dt.date):
+                ical['DTSTART'].params['VALUE'] = 'DATE'
+                if 'TZID' in ical['DTSTART'].params:
+                    del ical['DTSTART'].params['TZID']
+
             ical['DTEND'].dt = (
                 self.scheduled + self.duration
                 if self.scheduled and self.duration
                 else self.scheduled
             )
+
+            if isinstance(self.scheduled, dt.datetime) and self.duration:
+                ical['DTEND'].params['TZID'] = 'Europe/Berlin'
+                if 'VALUE' in ical['DTEND'].params:
+                    del ical['DTEND'].params['VALUE']
+
+            elif isinstance(self.scheduled, dt.date):
+                ical['DTEND'].params['VALUE'] = 'DATE'
+                if 'TZID' in ical['DTEND'].params:
+                    del ical['DTEND'].params['TZID']
+
             ical['DESCRIPTION'] = self.description
 
             remote_event.save()
+
         except caldav.lib.error.PutError as ex:
             logging.error(ex)
 
