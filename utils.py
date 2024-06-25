@@ -19,6 +19,9 @@ def parse_args() -> argparse.Namespace:
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', type=str, default='config.yml', help='Config file')
+    parser.add_argument(
+        '--delete_remote', action='store_true', help='Delete remote events'
+    )
     parser.add_argument('--debug', action='store_true', help='Enable debug logging')
     return parser.parse_args()
 
