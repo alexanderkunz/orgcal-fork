@@ -43,11 +43,18 @@ def process_calendar(calendar: dict, delete_remote_events: bool = False) -> None
     old_events = []
     for uid, event in old_cache.items():
         schedule_date = event.get('scheduled', None)
-        if (
-            schedule_date
-            and dt.datetime.strptime(schedule_date, '%Y-%m-%d %H:%M:%S%z').date()
-            >= cutoff_date
-        ):
+
+        if not schedule_date:
+            continue
+
+        if ':' in schedule_date:
+            format_string = '%Y-%m-%d %H:%M:%S%z'
+        else:
+            format_string = '%Y-%m-%d'
+
+        parsed_date = dt.datetime.strptime(schedule_date, format_string).date()
+
+        if parsed_date >= cutoff_date:
             old_events.append(uid)
 
     new_cache = {}
