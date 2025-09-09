@@ -1,5 +1,6 @@
 import os
 import logging
+import pickle
 import yaml
 
 
@@ -14,23 +15,13 @@ def check_cache_dir() -> None:
 
 def read_cache_file(filename: str) -> dict | None:
     full_filename = os.path.join(_CACHE_DIR, filename)
-
-    if not os.path.exists(full_filename):
-        logging.warning(f'The specified cache file could not be found: {full_filename}')
-        return None
-
-    if not os.path.isfile(full_filename):
-        logging.error(f'The specified path is not a file: {full_filename}')
-        return None
-
-    if not full_filename.endswith('.yaml') or full_filename.endswith('.yml'):
-        logging.error(f'Only YAML files are supported: {full_filename}')
-        return None
-
-    with open(full_filename, 'r') as cache_file:
-        return yaml.load(cache_file, yaml.BaseLoader)
+    try:
+        with open(full_filename, 'rb') as cache_file:
+            return pickle.load(cache_file)
+    except Exception as e:
+        logging.error(e)
 
 
 def write_cache_file(filename: str, data: dict) -> None:
-    with open(os.path.join(_CACHE_DIR, filename), 'w') as cache_file:
-        yaml.dump(data, cache_file)
+    with open(os.path.join(_CACHE_DIR, filename), 'wb') as cache_file:
+        pickle.dump(data, cache_file)

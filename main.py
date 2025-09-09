@@ -1,3 +1,5 @@
+import uuid
+import hashlib
 import logging
 import caldav
 import datetime as dt
@@ -7,31 +9,28 @@ from utils import (
     read_config_file,
     parse_args,
     load_all_headings_from_mixed_list,
-    parse_cutoff_date,
     force_timestamp,
 )
 from events import Event
 from cache import check_cache_dir, read_cache_file, write_cache_file
 
 
-def process_calendar(calendar: dict, delete_remote_events: bool = False) -> None:
+def process_calendar(calendar: dict) -> None:
     server_url = calendar['url']
     calendar_id = calendar['id']
     calendar_url = server_url + calendar_id
 
     logging.info(f'Processing calendar: {calendar_id}')
-    cutoff_date = parse_cutoff_date(calendar['sync_cutoff'])
-    logging.info(f'Sync cutoff date: {cutoff_date}')
 
     events = sorted(
-        map(
+        [event for generator in map(
             Event.from_org,
-            load_all_headings_from_mixed_list(calendar['org_files'], cutoff_date),
-        ),
-        key=lambda event: force_timestamp(event.scheduled),
+            load_all_headings_from_mixed_list(calendar['org_files']),
+        ) for event in generator],
+        key=lambda event: hash(event.scheduled),
     )
 
-    cache_filename = f'{calendar_id}.yaml'
+    cache_filename = f'{calendar_id}.bin'
     cache_file = read_cache_file(cache_filename)
 
     if not cache_file:
@@ -40,27 +39,17 @@ def process_calendar(calendar: dict, delete_remote_events: bool = False) -> None
     else:
         old_cache = cache_file.get('cache', {})
 
-    old_events = []
-    for uid, event in old_cache.items():
-        schedule_date = event.get('scheduled', None)
-
-        if not schedule_date:
-            continue
-
-        if ':' in schedule_date:
-            format_string = '%Y-%m-%d %H:%M:%S%z'
-        else:
-            format_string = '%Y-%m-%d'
-
-        parsed_date = dt.datetime.strptime(schedule_date, format_string).date()
-
-        if parsed_date >= cutoff_date:
-            old_events.append(uid)
-
+    old_events = list(old_cache.keys())
     new_cache = {}
 
-    if not delete_remote_events:
-        new_cache = old_cache
+    # optionally read password from file
+    file_prefix = "file="
+    if calendar['password'].startswith("file="):
+        try:
+            with open(calendar['password'][len(file_prefix):], "r") as password_file:
+                calendar['password'] = password_file.read().strip()
+        except:
+            pass
 
     with caldav.DAVClient(
         url=server_url,
@@ -73,44 +62,75 @@ def process_calendar(calendar: dict, delete_remote_events: bool = False) -> None
             logging.error(f'Calendar not found: {calendar_id}')
             return
 
+        processed_uids = set()
         for i, event in enumerate(events):
-            time_str = f'{event.scheduled:%Y-%m-%d %H:%M}'
-            if event.scheduled and event.duration:
-                time_str += f'--{event.scheduled + event.duration:%H:%M}'
+            try:
+                # generate ID if event has none attached
+                if event.uid is None:
+                    hash_str = \
+                        f"{calendar_id}\0{event.title}\0{event.scheduled}\0" \
+                        f"{event.recurrence_freq}\0{event.recurrence_interval}\0{event.recurrence_count}"
+                    hash_val = int(hashlib.sha256(hash_str.encode("utf-8")).hexdigest(), 16)
+                    event.uid = str(uuid.UUID(int=hash_val & ((1 << 128) - 1), version=4))
 
-            status_string = f'[{i + 1:03}/{len(events):03}] [{time_str}] {event.title}'
+                # prevent duplicate IDs
+                if event.uid in processed_uids:
+                    continue
+                processed_uids.add(event.uid)
 
-            if event.uid in old_events:
-                old_events.remove(event.uid)
+                # build new cache
+                new_cache[event.uid] = {
+                    'title': event.title,
+                    'scheduled': event.scheduled,
+                    'duration': event.duration,
+                    'description': event.description,
+                    'recurrence_freq': event.recurrence_freq,
+                    'recurrence_interval': event.recurrence_interval,
+                    'recurrence_count': event.recurrence_count,
+                    'tags': event.tags,
+                }
 
-            new_cache[event.uid] = {
-                'title': event.title,
-                'scheduled': event.scheduled,
-                'duration': event.duration,
-                'description': event.description,
-            }
+                # search in old events
+                skip = False
+                if event.uid in old_events:
+                    old_events.remove(event.uid)
 
-            if remote_event := Event.find_remote_event(remote_calendar, event.uid):
-                if event.compare_with_ical(remote_event):
-                    logging.debug(f'No changes for event: {event.title}')
-                    prefix = '= '
+                    # skip when matching
+                    old_event = old_cache[event.uid]
+                    if old_cache[event.uid] == new_cache[event.uid]:
+                        continue
+
+                # update event
+                if remote_event := Event.find_remote_event(remote_calendar, event.uid):
+                    if event.compare_with_ical(remote_event):
+                        prefix = '= '
+                    else:
+                        event.update_remote_event(remote_event)
+                        prefix = '~ '
                 else:
-                    logging.debug(f'Updating event: {event.title}')
-                    event.update_remote_event(remote_event)
-                    prefix = '~ '
-            else:
-                logging.debug(f'Creating event: {event.title}')
-                event.save_to_calendar(remote_calendar)
-                prefix = '+ '
+                    event.save_to_calendar(remote_calendar)
+                    prefix = '+ '
 
-            logging.info(prefix + status_string)
+                # announce status
+                time_str = f'{event.scheduled:%Y-%m-%d %H:%M}'
+                if event.scheduled and event.duration:
+                    time_str += f'--{event.scheduled + event.duration:%H:%M}'
+                status_string = f'[{i + 1:03}/{len(events):03}] [{time_str}] {event.title}'
+                logging.info(prefix + status_string)
 
-        if delete_remote_events:
-            for uid in old_events:
-                if remote_event := Event.find_remote_event(remote_calendar, uid):
-                    logging.info(f'Removing cached event "{old_cache[uid]["title"]}".')
-                    remote_event.delete()
+            except Exception as e:
 
+                # log event and exception
+                logging.error(event)
+                logging.error(e)
+
+        # delete old elements
+        for uid in old_events:
+            if remote_event := Event.find_remote_event(remote_calendar, uid):
+                logging.info(f'Removing cached event "{old_cache[uid]["title"]}".')
+                remote_event.delete()
+
+        # persist cache
         write_cache_file(
             cache_filename,
             {
@@ -122,16 +142,16 @@ def process_calendar(calendar: dict, delete_remote_events: bool = False) -> None
 def main(
     config_file: str = 'config.yml',
     debug: bool = False,
-    delete_remote_events: bool = False,
 ) -> None:
     try:
+        # read config
         if not (config := read_config_file(config_file)):
             return
 
+        # process all calendars
         calendars = config.get('calendars', [])
-
         for calendar in calendars:
-            process_calendar(calendar, delete_remote_events)
+            process_calendar(calendar)
 
     except Exception as ex:
         if debug:
@@ -145,7 +165,7 @@ if __name__ == '__main__':
         args = parse_args()
         setup_logging(args.debug)
         check_cache_dir()
-        main(args.config, args.debug, args.delete_remote)
+        main(args.config, args.debug)
 
     except KeyboardInterrupt:
         print()

@@ -1,6 +1,7 @@
 import os
 import glob
 import argparse
+import subprocess
 import logging
 import datetime as dt
 import pytz
@@ -8,7 +9,10 @@ import orgparse.date
 import yaml
 
 
-_DEFAULT_TODO_KEYWORDS = ['NEXT', 'RUNNING', 'PAUSED', 'WAIT', 'CANCELLED', 'DELEGATED']
+_DEFAULT_TODO_KEYWORDS = [
+    'PROGRESS', 'OPEN', 'NEXT', 'RUNNING', 'PAUSED',
+    'TODO', 'WAITING', 'WAIT', 'DELEGATED', 'AGAIN',
+    'DONE', 'CANCELLED', 'FUTURE', 'READY']
 _DEFAULT_PRIORITIES = ['A', 'B', 'C', 'D', 'E', 'F', 'G']
 
 
@@ -19,9 +23,6 @@ def parse_args() -> argparse.Namespace:
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', type=str, default='config.yml', help='Config file')
-    parser.add_argument(
-        '--delete_remote', action='store_true', help='Delete remote events'
-    )
     parser.add_argument('--debug', action='store_true', help='Enable debug logging')
     return parser.parse_args()
 
@@ -91,22 +92,22 @@ def clean_up_heading(
 
     for keyword in todo_keywords:
         if heading.startswith(keyword):
-            heading = heading.replace(keyword, '').strip()
+            heading = heading[len(keyword):].lstrip()
 
     for priority in priorities:
-        if heading.startswith(f'[#{priority}]'):
-            heading = heading.replace(f'[#{priority}]', '').strip()
+        priority_str = f'[#{priority}]'
+        if heading.startswith(priority_str):
+            heading = heading[len(priority_str):].lstrip()
 
-    return heading
+    return heading.strip()
 
 
-def load_all_headings_from_file(filename: str, cutoff_date: dt.date) -> list | None:
+def load_all_headings_from_file(filename: str) -> list | None:
     '''
     Load all headings from an org file and return a list of headings.
 
     Args:
         filename (str): The name of the org file to load.
-        cutoff_date (dt.date): The date to use as the cutoff date. No headings with a scheduled date before this will be returned.
 
     Returns:
         list | None: A list of headings or None if the file could not be found or read.
@@ -128,16 +129,7 @@ def load_all_headings_from_file(filename: str, cutoff_date: dt.date) -> list | N
     root_node = orgparse.load(filename)
 
     for node in root_node[1:]:
-        if node.scheduled:
-            day = (
-                node.scheduled.start.date()
-                if isinstance(node.scheduled.start, dt.datetime)
-                else node.scheduled.start
-            )
-
-            if day < cutoff_date:
-                continue
-
+        if node.scheduled or node.deadline:
             nodes.append(node)
 
     return nodes
@@ -162,7 +154,17 @@ def get_all_org_file_in_directory(directory_path: str) -> list[str] | None:
         logging.error(f'The specified path is not a directory: {directory_path}')
         return None
 
-    return glob.glob(os.path.join(directory_path, '*.org'))
+    # get files that contain schedules/deadlines
+    files_proc = subprocess.run(
+        ["rg", "-g", "*.org", "-li", r"(SCHEDULED|DEADLINE):", directory_path],
+        capture_output=True, text=True
+    )
+    files_list = []
+    for line in files_proc.stdout.strip().split("\n"):
+        if ".sync-conflict-" not in line:
+            files_list.append(line.strip())
+
+    return sorted(files_list, reverse=True)
 
 
 def get_all_org_files_from_mixed_list(
@@ -191,14 +193,13 @@ def get_all_org_files_from_mixed_list(
 
 
 def load_all_headings_from_mixed_list(
-    mixed_list: list[str], cutoff_date: dt.date
+    mixed_list: list[str]
 ) -> list:
     '''
     Load all headings from org files and return a list of headings.
 
     Args:
         mixed_list (list[str]): The mixed list to search.
-        cutoff_date (dt.date): The date to use as the cutoff date. No headings with a scheduled date before this will be returned.
 
     Returns:
         list: A list of headings.
@@ -208,7 +209,7 @@ def load_all_headings_from_mixed_list(
     nodes = []
 
     for filename in files:
-        nodes += load_all_headings_from_file(filename, cutoff_date) or []
+        nodes += load_all_headings_from_file(filename) or []
 
     return nodes
 
@@ -241,25 +242,6 @@ def read_config_file(filename: str) -> dict | None:
 
     with open(filename, 'r') as config_file:
         return yaml.safe_load(config_file)
-
-
-def parse_cutoff_date(date_str) -> dt.date:
-    '''
-    Parse a date string and return a date object.
-
-    Args:
-        date_str (str): The date string to parse.
-
-    Returns:
-        dt.date: The date object.
-    '''
-
-    if date_str == 'now':
-        return dt.date.today()
-    elif date_str == 'thisweek':
-        return dt.date.today() - dt.timedelta(days=dt.date.today().weekday())
-    else:
-        return dt.datetime.strptime(date_str, '%Y-%m-%d').date()
 
 
 def force_timestamp(scheduled: dt.datetime | dt.date | None) -> dt.datetime:
